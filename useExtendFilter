@@ -1,0 +1,264 @@
+const actions = {
+    init: "init",
+    setFilter: "setFilter",
+    resetFilters: "resetFilters",
+    updateFilter: "updateFilter",
+    deleteFilter: "deleteFilter"
+};
+
+function useFilter(hooks) {
+    hooks.stateReducers.push(reducer);
+    hooks.useInstance.push(useInstance);
+}
+
+
+function reducer(state, action, prevState, instance) {
+    if (action.type === actions.init) {
+        return {
+            filters: [],
+            ...state
+        }
+    }
+
+    if (action.type === actions.resetFilters) {
+        return {
+            ...state,
+            filters: instance.initialState.filters || []
+        }
+    }
+
+    if (action.type === actions.updateFilter) {
+
+        const {id, columnId, executor, filterValue} = action;
+
+        const index = state.filters.findIndex(x => x.id === id);
+
+        const filters = [...state.filters];
+        Object.assign(filters[index], {columnId, executor, filterValue});
+
+        return {
+            ...state,
+            filters
+        }
+    }
+
+
+    if (action.type === actions.setFilter) {
+        const {allColumns} = instance;
+        const {columnId, executor, filterValue} = action;
+
+        const column = allColumns.find(x => x.id === columnId);
+
+        if (!column) {
+            throw new Error(
+                `React-Table: Could not find a column with id: ${columnId}`
+            )
+        }
+
+        const id = nanoid();
+
+        const filter = {
+            id,
+            columnId,
+            executor,
+            filterValue
+        }
+
+        return {
+            ...state,
+            filters: [...state.filters, filter]
+        }
+    }
+
+    if (action.type === actions.deleteFilter) {
+        let {deletingFilters} = action;
+
+        deletingFilters = flattenDeep(deletingFilters);
+
+        const filters = deletingFilters.reduce((previousValue, currentValue) => {
+            const index = previousValue.findIndex(x => x.id === currentValue.id);
+
+            if (index !== -1) {
+                previousValue.splice(index, 1);
+            }
+
+            return previousValue
+
+        }, [...state.filters]);
+
+        return {
+            ...state,
+            filters
+        }
+
+    }
+}
+
+function useInstance(instance) {
+    const {
+        data,
+        allColumns,
+        rows,
+        flatRows,
+        rowsById,
+        dispatch,
+        state: {filters},
+        manualFilters = false,
+        defaultCanFilter,
+        disableFilters,
+        autoResetFilters = true
+    } = instance;
+
+    const setFilter = useCallback((columnId, executor, filterValue) => {
+        const action = {
+            type: actions.setFilter,
+            columnId,
+            executor,
+            filterValue
+        }
+
+        dispatch(action);
+    }, [dispatch]);
+
+    const deleteFilter = useCallback((...deletingFilters) => {
+
+        const action = {
+            type: actions.deleteFilter,
+            deletingFilters
+        }
+
+        dispatch(action);
+    }, [dispatch]);
+
+    const updateFilter = useCallback((id, columnId, executor, filterValue) => {
+        const action = {
+            type: actions.updateFilter,
+            id,
+            columnId,
+            executor,
+            filterValue
+        }
+
+        dispatch(action);
+    }, []);
+
+    const resetFilters = useCallback(() => {
+        const action = {
+            type: actions.resetFilters
+        }
+
+        dispatch(action)
+    }, [dispatch]);
+
+    allColumns.forEach(column => {
+        const {
+            accessor,
+            id: columnId,
+            filters = [],
+            defaultCanFilter: columnDefaultCanFilter,
+            disableFilters: columnDisableFilters
+        } = column;
+
+        column.filters = filters;
+
+        column.canFilter = accessor ?
+            getFirstNotUndefined(
+                columnDisableFilters === true ? false : undefined,
+                disableFilters === true ? false : undefined,
+                true
+            )
+            :
+            getFirstNotUndefined(
+                columnDefaultCanFilter,
+                defaultCanFilter,
+                false
+            )
+
+        column.appliedFilters = filters.filter(x => columnId === x.columnId);
+
+        column.setFilter = (filterFunc, filterValue) => {
+            setFilter(column, filterFunc, filterValue);
+        }
+
+        column.resetFilters = () => {
+            column.deleteFilter(column.appliedFilters)
+        }
+
+        column.deleteFilter = deleteFilter;
+        
+    });
+
+    const [
+        filteredRows,
+        filteredFlatRows,
+        filteredRowsById,
+    ] = useMemo(() => {
+
+        if (manualFilters || !filters.length) {
+            return [rows, flatRows, rowsById]
+        }
+
+        const filteredFlatRows = [];
+        const filteredRowsById = {};
+
+        const filterRows = rows => {
+
+            const filteredRows = filters.reduce((rows, {columnId, executor, filterValue}) => {
+
+                const column = allColumns.find(c => c.id === columnId);
+
+                if (!column) {
+                    return rows
+                }
+
+                if (!column.filters.find(f => f === executor)) {
+                    throw new Error(`React-Table: Can't apply filter because column's filters array don't contain it`)
+                }
+
+                return rows.filter(row => {
+                    const value = row.values[column.id];
+
+                    return executor.use(value, filterValue);
+                })
+            }, rows);
+
+            filteredRows.forEach(row => {
+                filteredFlatRows.push(row);
+                filteredRowsById[row.id] = row;
+                if (row.subRows?.length > 0) {
+                    filterRows(row.subRows);
+                }
+            })
+
+            return filteredRows
+        }
+
+        return [filterRows(rows), filteredFlatRows, filteredRowsById]
+
+    }, [allColumns, manualFilters, rows, flatRows, rowsById, filters]);
+
+
+    useMountedLayoutEffect(() => {
+        if (autoResetFilters) {
+            dispatch({type: actions.resetFilters});
+        }
+    }, [data]);
+
+    Object.assign(instance, {
+        setFilter,
+        updateFilter,
+        deleteFilter,
+        resetFilters,
+        filteredRows,
+        filteredFlatRows,
+        filteredRowsById,
+        rows: filteredRows,
+        flatRows: filteredFlatRows,
+        rowsById: filteredRowsById,
+        preFilteredRows: rows,
+        preFilteredFlatRows: flatRows,
+        preFilteredRowsById: rowsById
+    })
+}
+
+export default useExtendFilter
